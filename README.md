@@ -85,7 +85,8 @@ notepad .\config.psd1
 至少检查以下配置：
 
 - `CodexCommand`：`codex.exe` 可执行文件名或绝对路径
-- `Model`：留空时使用 Codex CLI 当前默认模型
+- `Model`：默认使用 `gpt-5.6-sol`
+- `ReasoningEffort`：默认使用 `low`，减少截图问答等待时间
 - `Delivery.WebsiteUrl`：本机网站地址，例如 `http://127.0.0.1:8787`
 - `Delivery.IngestToken`：必须与 `website/.env` 中的 `INGEST_TOKEN` 完全一致
 - `Prompt`：发送给 Codex 的屏幕分析提示词

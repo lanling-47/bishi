@@ -2,8 +2,9 @@
     # Use an absolute path here if codex.exe is not available on PATH.
     CodexCommand = "codex.exe"
 
-    # Leave Model empty to use the CLI's configured default model.
-    Model = ""
+    # Fast defaults for screenshot question answering.
+    Model = "gpt-5.6-sol"
+    ReasoningEffort = "low"
     TimeoutSeconds = 120
 
     # The background worker checks for phone-triggered screenshot requests at this interval.

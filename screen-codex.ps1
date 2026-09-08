@@ -59,6 +59,9 @@ function Invoke-CodexVision {
     )
 
     $arguments = @("exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--image", $ImagePath, "--output-last-message", $AnswerPath, $Config.Prompt)
+    if ($Config.ContainsKey("ReasoningEffort") -and -not [string]::IsNullOrWhiteSpace($Config.ReasoningEffort)) {
+        $arguments = @("exec", "--config", "model_reasoning_effort=$($Config.ReasoningEffort)") + $arguments[1..($arguments.Count - 1)]
+    }
     if ($Config.ContainsKey("Model") -and -not [string]::IsNullOrWhiteSpace($Config.Model)) {
         $arguments = @("exec", "--model", $Config.Model) + $arguments[1..($arguments.Count - 1)]
     }

@@ -1,0 +1,6 @@
+config.psd1
+website/.env
+website/data/
+*.log
+.DS_Store
+Thumbs.db

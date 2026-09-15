@@ -137,6 +137,15 @@ function Upload-CaptureResult {
     Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType "application/json; charset=utf-8" -Body $payload | Out-Null
 }
 
+function Report-JobFailure {
+    param([hashtable]$Delivery, [string]$JobId, [string]$Message)
+
+    $baseUrl = Get-WebsiteBaseUrl -Delivery $Delivery
+    $payload = @{ error = $Message.Substring(0, [Math]::Min(2000, $Message.Length)) } | ConvertTo-Json -Compress
+    $headers = @{ Authorization = "Bearer $($Delivery.IngestToken)" }
+    Invoke-RestMethod -Method Post -Uri "$baseUrl/api/jobs/$JobId/error" -Headers $headers -ContentType "application/json; charset=utf-8" -Body $payload | Out-Null
+}
+
 function Invoke-ScreenQuestion {
     param([hashtable]$Config, [string]$JobId)
 
@@ -186,6 +195,7 @@ $pollSeconds = if ($config.ContainsKey("PollSeconds")) { [int]$config.PollSecond
 if ($pollSeconds -lt 1) { throw "PollSeconds must be at least 1." }
 Write-Log "Service started. It only captures after a website request. Press Ctrl+C to stop."
 while ($true) {
+    $job = $null
     try {
         $job = Claim-ScreenshotJob -Delivery $config.Delivery
         if ($null -ne $job) {
@@ -194,6 +204,14 @@ while ($true) {
             if ($Once) { break }
         }
     }
-    catch { Write-Log "Run failed: $($_.Exception.ToString())" }
+    catch {
+        $message = $_.Exception.ToString()
+        Write-Log "Run failed: $message"
+        if ($null -ne $job) {
+            try { Report-JobFailure -Delivery $config.Delivery -JobId $job.id -Message $message }
+            catch { Write-Log "Could not report the failure to the website: $($_.Exception.Message)" }
+            if ($Once) { break }
+        }
+    }
     Start-Sleep -Seconds $pollSeconds
 }

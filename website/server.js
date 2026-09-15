@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
+const querystring = require("node:querystring");
 
 function loadEnv(file) {
   try {
@@ -27,7 +28,10 @@ function required(name) {
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const ingestToken = required("INGEST_TOKEN");
+const sessionSecret = required("SESSION_SECRET");
+const cookieSecure = process.env.COOKIE_SECURE === "true";
 const dataDirectory = path.join(__dirname, "data", "captures");
+const sessions = new Map();
 const jobs = new Map();
 const maximumBodyBytes = 16 * 1024 * 1024;
 
@@ -54,11 +58,33 @@ function readBody(request, limit = maximumBodyBytes) {
     request.on("error", reject);
   });
 }
+function cookies(request) {
+  return Object.fromEntries((request.headers.cookie || "").split(";").map((item) => {
+    const index = item.indexOf("=");
+    return index < 0 ? [] : [item.slice(0, index).trim(), decodeURIComponent(item.slice(index + 1))];
+  }).filter((item) => item.length));
+}
+function signature(token) { return crypto.createHmac("sha256", sessionSecret).update(token).digest("base64url"); }
+function loggedIn(request) {
+  const value = cookies(request).screen_codex_session;
+  if (!value) return false;
+  const [token, sig] = value.split(".");
+  const session = token && sig && safeEqual(sig, signature(token)) && sessions.get(token);
+  if (!session || session.expiresAt < Date.now()) { sessions.delete(token); return false; }
+  return true;
+}
+function requireLogin() { return true; }
 function validWorker(request, response) {
   const value = request.headers.authorization || "";
   if (value.startsWith("Bearer ") && safeEqual(value.slice(7), ingestToken)) return true;
   json(response, 401, { error: "Invalid ingest token." });
   return false;
+}
+function setSession(response) {
+  const token = crypto.randomBytes(32).toString("base64url");
+  sessions.set(token, { expiresAt: Date.now() + 12 * 60 * 60 * 1000 });
+  const secure = cookieSecure ? "; Secure" : "";
+  response.setHeader("Set-Cookie", `screen_codex_session=${token}.${signature(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}`);
 }
 function validId(id) { return /^[a-f0-9-]{36}$/.test(id); }
 function publicJob(job) { return { id: job.id, status: job.status, requestedAt: job.requestedAt, completedAt: job.completedAt || null, error: job.error || null, captureId: job.captureId || null }; }
@@ -165,10 +191,13 @@ let timer;
 
 async function load() {
   try {
+    console.log('开始加载数据...');
     const [jr, cr] = await Promise.all([fetch('/api/jobs'), fetch('/api/captures')]);
+    console.log('API响应:', jr.status, cr.status);
 
     const jobs = await jr.json();
     const captures = await cr.json();
+    console.log('Jobs:', jobs, 'Captures:', captures);
 
     const active = jobs.find(x => x.status === 'queued' || x.status === 'processing');
     const failed = jobs.find(x => x.status === 'failed');
@@ -179,7 +208,10 @@ async function load() {
     app.innerHTML = '<div class="toolbar"><button class="primary" id="request" ' + (active ? 'disabled' : '') + '>截图并分析</button><span class="status">' + escape(state) + '</span></div>' +
       (captures.length ? captures.map(x => '<article class="capture"><div class="meta"><time>' + escape(new Date(x.capturedAt).toLocaleString()) + '</time><button class="danger" data-id="' + x.id + '">删除</button></div><div class="content"><img loading="lazy" src="' + x.imageUrl + '" alt="屏幕截图"><div class="answer">' + escape(x.answer) + '</div></div></article>').join('') : '<p class="empty">点击"截图并分析"后，电脑会执行一次截图和 Codex 推理。</p>');
 
+    console.log('按钮已创建');
+
     document.getElementById('request').onclick = async () => {
+      console.log('点击截图按钮');
       const r = await fetch('/api/jobs', {method: 'POST'});
       if (r.ok || r.status === 409) load();
     };
@@ -199,6 +231,7 @@ async function load() {
   }
 }
 
+console.log('页面已加载，开始执行load()');
 load();
 </script>
 </body>
@@ -216,6 +249,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "POST" && result) { if (validWorker(request, response)) await saveResult(request, response, result[1]); return; }
     const failure = url.pathname.match(/^\/api\/jobs\/([a-f0-9-]{36})\/error$/);
     if (request.method === "POST" && failure) { if (validWorker(request, response)) await failJob(request, response, failure[1]); return; }
+    if (!requireLogin(request, response)) return;
     if (request.method === "POST" && url.pathname === "/api/jobs") return createJob(response);
     if (request.method === "GET" && url.pathname === "/api/jobs") return json(response, 200, [...jobs.values()].map(publicJob).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt)).slice(0, 10));
     if (request.method === "GET" && url.pathname === "/api/captures") return json(response, 200, await listCaptures());
@@ -230,4 +264,6 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
+setInterval(() => { const now = Date.now(); for (const [token, session] of sessions) if (session.expiresAt < now) sessions.delete(token); }, 3600000).unref();
 server.listen(port, host, () => console.log(`Screen Codex website listening at http://${host}:${port}`));
+

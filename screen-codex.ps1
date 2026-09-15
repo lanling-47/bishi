@@ -50,6 +50,17 @@ function Capture-PrimaryScreen {
     }
 }
 
+function Resolve-CodexCommand {
+    param([string]$ConfiguredCommand)
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredCommand) -and (Test-Path -LiteralPath $ConfiguredCommand)) {
+        return (Resolve-Path -LiteralPath $ConfiguredCommand).Path
+    }
+    $resolved = Get-Command $ConfiguredCommand -ErrorAction SilentlyContinue
+    if ($null -ne $resolved) { return $resolved.Source }
+    throw "Codex executable not found: $ConfiguredCommand"
+}
+
 function Invoke-CodexVision {
     param(
         [hashtable]$Config,
@@ -67,7 +78,9 @@ function Invoke-CodexVision {
     }
     $stdoutPath = "$ErrorPath.stdout"
     $quotedArguments = $arguments | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }
-    $process = Start-Process -FilePath $Config.CodexCommand -ArgumentList $quotedArguments -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $ErrorPath -PassThru
+    $codexCommand = Resolve-CodexCommand -ConfiguredCommand $Config.CodexCommand
+    Write-Log "Using Codex executable: $codexCommand"
+    $process = Start-Process -FilePath $codexCommand -ArgumentList $quotedArguments -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $ErrorPath -PassThru
     $timeout = if ($Config.ContainsKey("TimeoutSeconds")) { [int]$Config.TimeoutSeconds } else { 120 }
     if (-not $process.WaitForExit($timeout * 1000)) { $process.Kill($true); throw "Codex did not return within $timeout seconds." }
     $process.WaitForExit()
@@ -124,15 +137,6 @@ function Upload-CaptureResult {
     Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType "application/json; charset=utf-8" -Body $payload | Out-Null
 }
 
-function Report-JobFailure {
-    param([hashtable]$Delivery, [string]$JobId, [string]$Message)
-
-    $baseUrl = Get-WebsiteBaseUrl -Delivery $Delivery
-    $payload = @{ error = $Message.Substring(0, [Math]::Min(2000, $Message.Length)) } | ConvertTo-Json -Compress
-    $headers = @{ Authorization = "Bearer $($Delivery.IngestToken)" }
-    Invoke-RestMethod -Method Post -Uri "$baseUrl/api/jobs/$JobId/error" -Headers $headers -ContentType "application/json; charset=utf-8" -Body $payload | Out-Null
-}
-
 function Invoke-ScreenQuestion {
     param([hashtable]$Config, [string]$JobId)
 
@@ -182,7 +186,6 @@ $pollSeconds = if ($config.ContainsKey("PollSeconds")) { [int]$config.PollSecond
 if ($pollSeconds -lt 1) { throw "PollSeconds must be at least 1." }
 Write-Log "Service started. It only captures after a website request. Press Ctrl+C to stop."
 while ($true) {
-    $job = $null
     try {
         $job = Claim-ScreenshotJob -Delivery $config.Delivery
         if ($null -ne $job) {
@@ -191,14 +194,6 @@ while ($true) {
             if ($Once) { break }
         }
     }
-    catch {
-        $message = $_.Exception.ToString()
-        Write-Log "Run failed: $message"
-        if ($null -ne $job) {
-            try { Report-JobFailure -Delivery $config.Delivery -JobId $job.id -Message $message }
-            catch { Write-Log "Could not report the failure to the website: $($_.Exception.Message)" }
-            if ($Once) { break }
-        }
-    }
+    catch { Write-Log "Run failed: $($_.Exception.ToString())" }
     Start-Sleep -Seconds $pollSeconds
 }
